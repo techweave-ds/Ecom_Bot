@@ -1,7 +1,7 @@
 streamlit
 langchain
 langchain-community
-langchain-groq
+langchain-groq==0.1.9
 chromadb
 sentence-transformers
 pypdf
