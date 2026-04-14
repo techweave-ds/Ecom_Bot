@@ -1,3 +1,12 @@
+import subprocess
+import sys
+
+try:
+    from groq import Groq
+except:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "groq"])
+    from groq import Groq
+
 import streamlit as st
 import os
 import datetime
