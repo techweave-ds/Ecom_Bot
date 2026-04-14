@@ -2,23 +2,21 @@ import streamlit as st
 import os
 import datetime
 import requests
-
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from pypdf import PdfReader
 
 # =========================
-# 🔐 API KEY (OpenRouter)
+# 🔐 API KEY
 # =========================
 OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
 
 # =========================
-# 🧠 LLM CALL (OpenRouter)
+# 🧠 LLM CALL
 # =========================
 def call_llm(prompt):
     response = requests.post(
-        url="https://openrouter.ai/api/v1/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json"
@@ -31,66 +29,74 @@ def call_llm(prompt):
     return response.json()["choices"][0]["message"]["content"]
 
 # =========================
-# 📦 Vector DB
+# 📄 LOAD PDF
+# =========================
+def load_pdf():
+    reader = PdfReader("faq.pdf")
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text()
+    return text
+
+# =========================
+# ✂️ CHUNKING
+# =========================
+def chunk_text(text, size=500):
+    return [text[i:i+size] for i in range(0, len(text), size)]
+
+# =========================
+# 🧠 EMBEDDINGS
 # =========================
 @st.cache_resource
-def load_vectordb():
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+def setup_embeddings():
+    model = SentenceTransformer('all-MiniLM-L6-v2')
 
-    if not os.path.exists("./faq_db"):
-        st.info("🔄 Creating knowledge base...")
+    text = load_pdf()
+    chunks = chunk_text(text)
 
-        loader = PyPDFLoader("faq.pdf")
-        documents = loader.load()
+    embeddings = model.encode(chunks)
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        chunks = splitter.split_documents(documents)
+    return model, chunks, embeddings
 
-        vectordb = Chroma.from_documents(
-            chunks,
-            embeddings,
-            persist_directory="./faq_db"
-        )
-    else:
-        vectordb = Chroma(
-            persist_directory="./faq_db",
-            embedding_function=embeddings
-        )
-
-    return vectordb
-
-vectordb = load_vectordb()
+model, chunks, embeddings = setup_embeddings()
 
 # =========================
-# 🧠 Classification
+# 🔍 SEARCH
+# =========================
+def search(query):
+    q_emb = model.encode([query])[0]
+
+    similarities = np.dot(embeddings, q_emb)
+    top_indices = np.argsort(similarities)[-3:]
+
+    return [chunks[i] for i in top_indices]
+
+# =========================
+# 🧠 CLASSIFICATION
 # =========================
 def classify_query(query):
     prompt = f"""
-    Classify this query into:
-    Warranty, Delivery, Returns, Product Info, General FAQ.
+    Classify into:
+    Warranty, Delivery, Returns, Product Info, FAQ.
 
     Query: {query}
 
     Only return category.
     """
-    return call_llm(prompt).strip()
+    return call_llm(prompt)
 
 # =========================
-# 🔎 RAG
+# 🤖 ANSWER
 # =========================
 def get_answer(query):
     intent = classify_query(query)
 
-    docs = vectordb.similarity_search(f"{intent}: {query}", k=3)
-    context = "\n\n".join([doc.page_content for doc in docs])
+    docs = search(query)
+    context = "\n\n".join(docs)
 
     prompt = f"""
-    You are an e-commerce support assistant.
-
     Answer ONLY from context.
-    If not found, say:
+    If not found say:
     "I don't have that information."
 
     Context:
@@ -103,7 +109,7 @@ def get_answer(query):
     return call_llm(prompt), intent
 
 # =========================
-# 📊 Logging
+# 📊 LOGGING
 # =========================
 def log_query(query, intent, response):
     with open("logs.txt", "a") as f:
@@ -120,7 +126,7 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
-if prompt := st.chat_input("Ask your question..."):
+if prompt := st.chat_input("Ask something..."):
     st.chat_message("user").write(prompt)
 
     response, intent = get_answer(prompt)
