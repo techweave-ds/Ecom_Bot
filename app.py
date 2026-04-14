@@ -1,40 +1,37 @@
-import subprocess
-import sys
-
-try:
-    from groq import Groq
-except:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "groq"])
-    from groq import Groq
-
 import streamlit as st
 import os
 import datetime
+import requests
 
-from groq import Groq
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # =========================
-# 🔐 API Key
+# 🔐 API KEY (OpenRouter)
 # =========================
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+OPENROUTER_API_KEY = st.secrets["OPENROUTER_API_KEY"]
 
 # =========================
-# 🧠 LLM CALL FUNCTION
+# 🧠 LLM CALL (OpenRouter)
 # =========================
 def call_llm(prompt):
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[{"role": "user", "content": prompt}],
+    response = requests.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "meta-llama/llama-3.1-8b-instruct",
+            "messages": [{"role": "user", "content": prompt}]
+        }
     )
-    return response.choices[0].message.content
-
+    return response.json()["choices"][0]["message"]["content"]
 
 # =========================
-# 📦 Load / Create Vector DB
+# 📦 Vector DB
 # =========================
 @st.cache_resource
 def load_vectordb():
@@ -43,15 +40,12 @@ def load_vectordb():
     )
 
     if not os.path.exists("./faq_db"):
-        st.info("🔄 Creating knowledge base (first run)...")
+        st.info("🔄 Creating knowledge base...")
 
         loader = PyPDFLoader("faq.pdf")
         documents = loader.load()
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50
-        )
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
         chunks = splitter.split_documents(documents)
 
         vectordb = Chroma.from_documents(
@@ -67,15 +61,14 @@ def load_vectordb():
 
     return vectordb
 
-
 vectordb = load_vectordb()
 
 # =========================
-# 🧠 Query Classification
+# 🧠 Classification
 # =========================
 def classify_query(query):
     prompt = f"""
-    Classify this query into one of these:
+    Classify this query into:
     Warranty, Delivery, Returns, Product Info, General FAQ.
 
     Query: {query}
@@ -84,16 +77,13 @@ def classify_query(query):
     """
     return call_llm(prompt).strip()
 
-
 # =========================
 # 🔎 RAG
 # =========================
 def get_answer(query):
     intent = classify_query(query)
 
-    enhanced_query = f"{intent}: {query}"
-
-    docs = vectordb.similarity_search(enhanced_query, k=3)
+    docs = vectordb.similarity_search(f"{intent}: {query}", k=3)
     context = "\n\n".join([doc.page_content for doc in docs])
 
     prompt = f"""
@@ -110,24 +100,19 @@ def get_answer(query):
     {query}
     """
 
-    response = call_llm(prompt)
-
-    return response, intent
-
+    return call_llm(prompt), intent
 
 # =========================
 # 📊 Logging
 # =========================
 def log_query(query, intent, response):
-    with open("logs.txt", "a", encoding="utf-8") as f:
+    with open("logs.txt", "a") as f:
         f.write(f"{datetime.datetime.now()} | {intent} | {query} | {response}\n")
-
 
 # =========================
 # 🎨 UI
 # =========================
 st.title("🛍️ E-Commerce Support Bot")
-st.caption("Ask about delivery, returns, warranty & more")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -136,14 +121,11 @@ for msg in st.session_state.messages:
     st.chat_message(msg["role"]).write(msg["content"])
 
 if prompt := st.chat_input("Ask your question..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
     response, intent = get_answer(prompt)
 
     log_query(prompt, intent, response)
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
     st.chat_message("assistant").write(response)
-
-    st.caption(f"🧠 Intent: {intent}")
+    st.caption(f"Intent: {intent}")
